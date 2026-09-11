@@ -299,17 +299,15 @@ pub fn get_sha1_hash(path: impl AsRef<Path>) -> Result<String, Box<dyn std::erro
         .collect())
 }
 
+#[cfg(windows)]
 pub fn get_os_version() -> String {
-    #[cfg(windows)]
-    {
-        let version = WindowsVersion::detect().unwrap();
-        return format!("{}.{}", version.major, version.minor);
-    }
+    let version = WindowsVersion::detect().unwrap();
+    format!("{}.{}", version.major, version.minor)
+}
 
-    #[cfg(not(windows))]
-    {
-        System::os_version().unwrap_or_else(|| "unknown".to_string())
-    }
+#[cfg(not(windows))]
+pub fn get_os_version() -> String {
+    System::os_version().unwrap_or_else(|| "unknown".to_string())
 }
 
 static REQUESTS_RESPONSE_CACHE: Lazy<Mutex<HashMap<String, RequestsResponseCache>>> =
