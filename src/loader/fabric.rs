@@ -45,6 +45,15 @@ pub fn list_loader_versions() -> Result<Vec<FabricLoaderVersion>> {
     http::get_json(&format!("{FABRIC_META_BASE}/versions/loader"))
 }
 
+/// Fetches Fabric loader versions without blocking the async runtime.
+///
+/// # Errors
+///
+/// Returns [`crate::LauncherError`] if the metadata request or decoding fails.
+pub async fn list_loader_versions_async() -> Result<Vec<FabricLoaderVersion>> {
+    http::get_json_async(&format!("{FABRIC_META_BASE}/versions/loader")).await
+}
+
 /// Fetches a Fabric loader profile for a Minecraft and loader version.
 ///
 /// # Errors
@@ -54,4 +63,19 @@ pub fn fetch_profile(minecraft_version: &str, loader_version: &str) -> Result<Ve
     http::get_json(&format!(
         "{FABRIC_META_BASE}/versions/loader/{minecraft_version}/{loader_version}/profile/json"
     ))
+}
+
+/// Fetches a Fabric loader profile without blocking the async runtime.
+///
+/// # Errors
+///
+/// Returns [`crate::LauncherError`] if the metadata request or decoding fails.
+pub async fn fetch_profile_async(
+    minecraft_version: &str,
+    loader_version: &str,
+) -> Result<VersionJson> {
+    http::get_json_async(&format!(
+        "{FABRIC_META_BASE}/versions/loader/{minecraft_version}/{loader_version}/profile/json"
+    ))
+    .await
 }

@@ -142,6 +142,33 @@ fn main() -> mc_launcher_core::Result<()> {
 }
 ```
 
+## Async Downloads
+
+Run your launcher on a tokio runtime to download files in parallel instead of
+sequentially. `Launcher::install_async` drives the same install flow through
+`net::download::execute_plan_async`, dispatching download tasks across the
+runtime's multi-threaded worker pool (defaulting to 16 concurrent workers) and
+offloading blocking work such as native extraction to the blocking pool.
+
+```rust
+use mc_launcher_core::prelude::*;
+
+#[tokio::main]
+async fn main() -> mc_launcher_core::Result<()> {
+    let launcher = Launcher::new(".minecraft");
+    let install = launcher
+        .install_async(InstallRequest::vanilla("1.20.1"))
+        .await?;
+    println!("installed profile: {}", install.version_id);
+    Ok(())
+}
+```
+
+To tune the download concurrency, call `net::download::execute_plan_async` with
+your own `DownloadPlan` and worker count. The synchronous facade still works for
+non-async callers and downloads sequentially. The async example is available as
+`async_install`.
+
 ## Launch Options
 
 `LaunchOptions::default()` is suitable for a basic offline launch. Override only
@@ -236,10 +263,12 @@ The repository includes runnable examples:
 cargo run --example simple_offline_launch
 cargo run --example simple_launch
 cargo run --example launch_matrix
+cargo run --example async_install
 ```
 
 The examples download real Minecraft metadata and files, so they require
-network access and enough disk space for the selected versions.
+network access and enough disk space for the selected versions. The async
+example needs a tokio-style async runtime, which is built in.
 
 ## Status
 

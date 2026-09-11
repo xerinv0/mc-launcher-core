@@ -11,7 +11,8 @@ use crate::{
     core::version::VersionJson,
     install::{
         client::{
-            fetch_vanilla_version, install_version_files, load_version_json, write_version_json,
+            fetch_vanilla_version, fetch_vanilla_version_async, install_version_files,
+            install_version_files_async, load_version_json, write_version_json,
         },
         loader::{run_loader_installer, write_loader_profile, InstallerInvocation},
         request::{InstallRequest, InstallResult},
@@ -20,7 +21,9 @@ use crate::{
         common::{LoaderSpec, LoaderVersion},
         LoaderKind,
     },
-    net::download::{execute_plan, DownloadPlan, DownloadTask},
+    net::download::{
+        execute_plan, execute_plan_async, DownloadPlan, DownloadTask, DEFAULT_DOWNLOAD_WORKERS,
+    },
     progress::{ProgressEvent, ProgressReporter},
     LauncherError, Result,
 };
@@ -162,6 +165,144 @@ impl Launcher {
         })
     }
 
+    /// Installs a vanilla or loader-backed Minecraft profile using concurrent
+    /// async downloads.
+    ///
+    /// This is a convenience wrapper around
+    /// [`Launcher::install_with_progress_async`] that ignores progress events.
+    /// It must be called from within a tokio runtime; the runtime's worker pool
+    /// drives the parallel downloads and blocking file work is offloaded to its
+    /// blocking pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LauncherError`] for network, filesystem, metadata, checksum, or
+    /// loader-installer failures.
+    pub async fn install_async(&self, request: InstallRequest) -> Result<InstallResult> {
+        let mut reporter = |_event: ProgressEvent| {};
+        self.install_with_progress_async(request, &mut reporter)
+            .await
+    }
+
+    /// Installs a profile and reports progress, using concurrent async downloads.
+    ///
+    /// Mirrors [`Launcher::install_with_progress`] for async callers. The plan
+    /// is executed by [`crate::net::download::execute_plan_async`] with
+    /// [`crate::net::download::DEFAULT_DOWNLOAD_WORKERS`] workers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LauncherError`] for invalid versions, failed downloads,
+    /// checksum mismatches, unsafe paths, or loader installer failures.
+    pub async fn install_with_progress_async(
+        &self,
+        request: InstallRequest,
+        reporter: &mut dyn ProgressReporter,
+    ) -> Result<InstallResult> {
+        if let Some(loader) = request.loader.clone() {
+            match loader {
+                LoaderSpec::Fabric { version } => {
+                    self.install_vanilla_version_async(&request.minecraft_version, reporter)
+                        .await?;
+                    let loader_version = resolve_fabric_loader_version_async(version).await?;
+                    let profile = crate::loader::fabric::fetch_profile_async(
+                        &request.minecraft_version,
+                        &loader_version,
+                    )
+                    .await?;
+                    let version_id = version_id(&profile, "loader profile")?.to_string();
+                    write_loader_profile(&self.minecraft_dir, &profile)?;
+                    let merged = self.load_version(&version_id)?;
+                    install_version_files_async(&merged, &self.minecraft_dir, reporter).await?;
+                    return Ok(InstallResult { version_id });
+                }
+                LoaderSpec::Quilt { version } => {
+                    self.install_vanilla_version_async(&request.minecraft_version, reporter)
+                        .await?;
+                    let loader_version = resolve_quilt_loader_version_async(version).await?;
+                    let profile = crate::loader::quilt::fetch_profile_async(
+                        &request.minecraft_version,
+                        &loader_version,
+                    )
+                    .await?;
+                    let version_id = version_id(&profile, "loader profile")?.to_string();
+                    write_loader_profile(&self.minecraft_dir, &profile)?;
+                    let merged = self.load_version(&version_id)?;
+                    install_version_files_async(&merged, &self.minecraft_dir, reporter).await?;
+                    return Ok(InstallResult { version_id });
+                }
+                LoaderSpec::Forge { version } => {
+                    self.install_vanilla_version_async(&request.minecraft_version, reporter)
+                        .await?;
+                    let loader_version =
+                        resolve_forge_loader_version_async(&request.minecraft_version, version)
+                            .await?;
+                    let installer_path = download_installer_async(
+                        &self.minecraft_dir,
+                        "forge",
+                        &loader_version,
+                        &crate::loader::forge::installer_url(&loader_version),
+                    )
+                    .await?;
+                    let invocation = InstallerInvocation {
+                        loader: LoaderKind::Forge,
+                        java_executable: PathBuf::from("java"),
+                        installer_path,
+                        minecraft_dir: self.minecraft_dir.clone(),
+                    };
+                    tokio::task::spawn_blocking(move || run_loader_installer(&invocation))
+                        .await
+                        .map_err(|err| LauncherError::Other {
+                            message: format!("forge installer worker failed: {err}"),
+                        })??;
+                    let version_id =
+                        crate::loader::forge::forge_installed_version_id(&loader_version)?;
+                    let merged = self.load_version(&version_id)?;
+                    install_version_files_async(&merged, &self.minecraft_dir, reporter).await?;
+                    return Ok(InstallResult { version_id });
+                }
+                LoaderSpec::NeoForge { version } => {
+                    self.install_vanilla_version_async(&request.minecraft_version, reporter)
+                        .await?;
+                    let loader_version =
+                        resolve_neoforge_loader_version_async(&request.minecraft_version, version)
+                            .await?;
+                    let installer_path = download_installer_async(
+                        &self.minecraft_dir,
+                        "neoforge",
+                        &loader_version,
+                        &crate::loader::neoforge::installer_url(&loader_version),
+                    )
+                    .await?;
+                    let invocation = InstallerInvocation {
+                        loader: LoaderKind::NeoForge,
+                        java_executable: PathBuf::from("java"),
+                        installer_path,
+                        minecraft_dir: self.minecraft_dir.clone(),
+                    };
+                    tokio::task::spawn_blocking(move || run_loader_installer(&invocation))
+                        .await
+                        .map_err(|err| LauncherError::Other {
+                            message: format!("neoforge installer worker failed: {err}"),
+                        })??;
+                    let version_id = crate::loader::neoforge::neoforge_installed_version_id(
+                        &request.minecraft_version,
+                        &loader_version,
+                    );
+                    let merged = self.load_version(&version_id)?;
+                    install_version_files_async(&merged, &self.minecraft_dir, reporter).await?;
+                    return Ok(InstallResult { version_id });
+                }
+            }
+        }
+
+        self.install_vanilla_version_async(&request.minecraft_version, reporter)
+            .await?;
+        Ok(InstallResult {
+            version_id: request.minecraft_version,
+        })
+    }
+
     /// Builds a Java launch command from already-loaded version metadata.
     ///
     /// Call [`Launcher::load_version`] after installation to obtain merged
@@ -201,6 +342,16 @@ impl Launcher {
         write_version_json(&self.minecraft_dir, &version)?;
         install_version_files(&version, &self.minecraft_dir, reporter)
     }
+
+    async fn install_vanilla_version_async(
+        &self,
+        version_id: &str,
+        reporter: &mut dyn ProgressReporter,
+    ) -> Result<()> {
+        let version = fetch_vanilla_version_async(version_id).await?;
+        write_version_json(&self.minecraft_dir, &version)?;
+        install_version_files_async(&version, &self.minecraft_dir, reporter).await
+    }
 }
 
 fn version_id<'a>(version: &'a VersionJson, context: &str) -> Result<&'a str> {
@@ -224,11 +375,35 @@ fn resolve_fabric_loader_version(version: LoaderVersion) -> Result<String> {
     }
 }
 
+async fn resolve_fabric_loader_version_async(version: LoaderVersion) -> Result<String> {
+    match version {
+        LoaderVersion::Exact(version) => Ok(version),
+        LoaderVersion::Latest | LoaderVersion::LatestStable => {
+            let versions = crate::loader::fabric::list_loader_versions_async().await?;
+            Ok(crate::loader::fabric::latest_stable_loader(&versions)?
+                .version
+                .clone())
+        }
+    }
+}
+
 fn resolve_quilt_loader_version(version: LoaderVersion) -> Result<String> {
     match version {
         LoaderVersion::Exact(version) => Ok(version),
         LoaderVersion::Latest | LoaderVersion::LatestStable => {
             let versions = crate::loader::quilt::list_loader_versions()?;
+            Ok(crate::loader::quilt::latest_loader(&versions)?
+                .version
+                .clone())
+        }
+    }
+}
+
+async fn resolve_quilt_loader_version_async(version: LoaderVersion) -> Result<String> {
+    match version {
+        LoaderVersion::Exact(version) => Ok(version),
+        LoaderVersion::Latest | LoaderVersion::LatestStable => {
+            let versions = crate::loader::quilt::list_loader_versions_async().await?;
             Ok(crate::loader::quilt::latest_loader(&versions)?
                 .version
                 .clone())
@@ -249,6 +424,22 @@ fn resolve_forge_loader_version(minecraft_version: &str, version: LoaderVersion)
     }
 }
 
+async fn resolve_forge_loader_version_async(
+    minecraft_version: &str,
+    version: LoaderVersion,
+) -> Result<String> {
+    match version {
+        LoaderVersion::Exact(version) => Ok(version),
+        LoaderVersion::Latest | LoaderVersion::LatestStable => {
+            let versions = crate::loader::forge::list_forge_versions_async().await?;
+            Ok(
+                crate::loader::forge::latest_for_minecraft(&versions, minecraft_version)?
+                    .to_string(),
+            )
+        }
+    }
+}
+
 fn resolve_neoforge_loader_version(
     minecraft_version: &str,
     version: LoaderVersion,
@@ -257,6 +448,22 @@ fn resolve_neoforge_loader_version(
         LoaderVersion::Exact(version) => Ok(version),
         LoaderVersion::Latest | LoaderVersion::LatestStable => {
             let versions = crate::loader::neoforge::list_neoforge_versions()?;
+            Ok(
+                crate::loader::neoforge::latest_for_minecraft(&versions, minecraft_version)?
+                    .to_string(),
+            )
+        }
+    }
+}
+
+async fn resolve_neoforge_loader_version_async(
+    minecraft_version: &str,
+    version: LoaderVersion,
+) -> Result<String> {
+    match version {
+        LoaderVersion::Exact(version) => Ok(version),
+        LoaderVersion::Latest | LoaderVersion::LatestStable => {
+            let versions = crate::loader::neoforge::list_neoforge_versions_async().await?;
             Ok(
                 crate::loader::neoforge::latest_for_minecraft(&versions, minecraft_version)?
                     .to_string(),
@@ -285,5 +492,28 @@ fn download_installer(
     };
     let mut reporter = |_event: ProgressEvent| {};
     execute_plan(&plan, &mut reporter)?;
+    Ok(destination)
+}
+
+async fn download_installer_async(
+    minecraft_dir: &Path,
+    loader_name: &str,
+    loader_version: &str,
+    url: &str,
+) -> Result<PathBuf> {
+    let destination = minecraft_dir
+        .join("versions")
+        .join(".installers")
+        .join(format!("{loader_name}-{loader_version}-installer.jar"));
+    let plan = DownloadPlan {
+        tasks: vec![DownloadTask {
+            url: url.to_string(),
+            destination: destination.clone(),
+            checksum: None,
+            label: format!("{loader_name} installer {loader_version}"),
+        }],
+    };
+    let mut reporter = |_event: ProgressEvent| {};
+    execute_plan_async(&plan, DEFAULT_DOWNLOAD_WORKERS, &mut reporter).await?;
     Ok(destination)
 }

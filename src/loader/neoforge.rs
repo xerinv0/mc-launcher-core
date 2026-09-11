@@ -27,6 +27,15 @@ pub fn list_neoforge_versions() -> Result<Vec<String>> {
     Ok(parse_maven_metadata(&http::get_text(NEOFORGE_METADATA_URL)?)?.versions)
 }
 
+/// Fetches all NeoForge versions without blocking the async runtime.
+///
+/// # Errors
+///
+/// Returns [`crate::LauncherError`] if the metadata request or parsing fails.
+pub async fn list_neoforge_versions_async() -> Result<Vec<String>> {
+    Ok(parse_maven_metadata(&http::get_text_async(NEOFORGE_METADATA_URL).await?)?.versions)
+}
+
 /// Returns the newest advertised NeoForge version for a Minecraft version.
 ///
 /// NeoForge maps Minecraft `1.x.y` releases to loader versions beginning with

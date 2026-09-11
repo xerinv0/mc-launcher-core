@@ -64,6 +64,15 @@ pub fn list_forge_versions() -> Result<Vec<String>> {
     Ok(parse_maven_metadata(&http::get_text(FORGE_METADATA_URL)?)?.versions)
 }
 
+/// Fetches all Forge versions without blocking the async runtime.
+///
+/// # Errors
+///
+/// Returns [`crate::LauncherError`] if the metadata request or parsing fails.
+pub async fn list_forge_versions_async() -> Result<Vec<String>> {
+    Ok(parse_maven_metadata(&http::get_text_async(FORGE_METADATA_URL).await?)?.versions)
+}
+
 /// Returns the newest advertised Forge version for a Minecraft version.
 ///
 /// # Errors

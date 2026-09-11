@@ -70,6 +70,31 @@
 //! - [`core`], [`io`], and [`net`] hold lower-level primitives used by the
 //!   facade.
 //!
+//! # Async Downloads
+//!
+//! [`launcher::Launcher::install_async`] and the lower-level
+//! [`net::download::execute_plan_async`] install files through a tokio runtime,
+//! downloading tasks in parallel across the runtime's multi-threaded worker
+//! pool. Blocking work such as native extraction and loader installer execution
+//! is offloaded to the runtime's blocking pool.
+//!
+//! ```no_run
+//! use mc_launcher_core::prelude::*;
+//!
+//! #[tokio::main]
+//! async fn main() -> mc_launcher_core::Result<()> {
+//!     let launcher = Launcher::new(".minecraft");
+//!     let install = launcher
+//!         .install_async(InstallRequest::vanilla("1.20.1"))
+//!         .await?;
+//!     println!("installed profile: {}", install.version_id);
+//!     Ok(())
+//! }
+//! ```
+//!
+//! The synchronous facade described above remains available for callers that do
+//! not run an async runtime; it downloads sequentially.
+//!
 //! # Java Runtime
 //!
 //! The crate does not currently bundle or manage a production Java runtime for

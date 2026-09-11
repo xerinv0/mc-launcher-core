@@ -50,6 +50,15 @@ pub fn list_loader_versions() -> Result<Vec<QuiltLoaderVersion>> {
     http::get_json(&format!("{QUILT_META_BASE}/versions/loader"))
 }
 
+/// Fetches Quilt loader versions without blocking the async runtime.
+///
+/// # Errors
+///
+/// Returns [`crate::LauncherError`] if the metadata request or decoding fails.
+pub async fn list_loader_versions_async() -> Result<Vec<QuiltLoaderVersion>> {
+    http::get_json_async(&format!("{QUILT_META_BASE}/versions/loader")).await
+}
+
 /// Fetches a Quilt loader profile for a Minecraft and loader version.
 ///
 /// # Errors
@@ -59,4 +68,19 @@ pub fn fetch_profile(minecraft_version: &str, loader_version: &str) -> Result<Ve
     http::get_json(&format!(
         "{QUILT_META_BASE}/versions/loader/{minecraft_version}/{loader_version}/profile/json"
     ))
+}
+
+/// Fetches a Quilt loader profile without blocking the async runtime.
+///
+/// # Errors
+///
+/// Returns [`crate::LauncherError`] if the metadata request or decoding fails.
+pub async fn fetch_profile_async(
+    minecraft_version: &str,
+    loader_version: &str,
+) -> Result<VersionJson> {
+    http::get_json_async(&format!(
+        "{QUILT_META_BASE}/versions/loader/{minecraft_version}/{loader_version}/profile/json"
+    ))
+    .await
 }
