@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     core::version::VersionJson,
-    net::download::{execute_plan, Checksum, DownloadPlan, DownloadTask},
+    net::download::{
+        execute_plan, execute_plan_async, Checksum, DownloadPlan, DownloadTask,
+        DEFAULT_DOWNLOAD_WORKERS,
+    },
     progress::ProgressReporter,
     Result,
 };
@@ -121,4 +124,32 @@ pub fn install_assets(
     let index: AssetIndexJson = serde_json::from_slice(&fs::read(index_path)?)?;
     let object_plan = plan_asset_object_downloads_from_index(&index, minecraft_dir);
     execute_plan(&object_plan, reporter)
+}
+
+/// Downloads the asset index and all referenced asset objects using concurrent
+/// downloads on a tokio runtime.
+///
+/// # Errors
+///
+/// Returns [`crate::LauncherError`] if download, checksum, filesystem, or JSON
+/// decoding fails.
+pub async fn install_assets_async(
+    version: &VersionJson,
+    minecraft_dir: impl AsRef<Path>,
+    reporter: &mut dyn ProgressReporter,
+) -> Result<()> {
+    let minecraft_dir = minecraft_dir.as_ref();
+    let index_plan = DownloadPlan {
+        tasks: plan_asset_index_download(version, minecraft_dir)?,
+    };
+    execute_plan_async(&index_plan, DEFAULT_DOWNLOAD_WORKERS, reporter).await?;
+
+    let Some(asset_index) = &version.asset_index else {
+        return Ok(());
+    };
+    let index_path = asset_index_path(minecraft_dir, &asset_index.id);
+    let index_bytes = tokio::fs::read(index_path).await?;
+    let index: AssetIndexJson = serde_json::from_slice(&index_bytes)?;
+    let object_plan = plan_asset_object_downloads_from_index(&index, minecraft_dir);
+    execute_plan_async(&object_plan, DEFAULT_DOWNLOAD_WORKERS, reporter).await
 }

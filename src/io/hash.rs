@@ -7,6 +7,7 @@ use std::{
 };
 
 use sha1::{Digest, Sha1};
+use tokio::io::AsyncReadExt;
 
 use crate::Result;
 
@@ -29,9 +30,31 @@ pub fn sha1_file(path: impl AsRef<Path>) -> Result<String> {
         hasher.update(&buffer[..read]);
     }
 
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    Ok(hex_digest(hasher.finalize()))
+}
+
+/// Calculates the SHA-1 digest of a file as lowercase hexadecimal without
+/// blocking the async runtime.
+///
+/// # Errors
+///
+/// Returns [`crate::LauncherError`] if the file cannot be read.
+pub async fn sha1_file_async(path: impl AsRef<Path>) -> Result<String> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha1::new();
+    let mut buffer = vec![0_u8; 64 * 1024];
+
+    loop {
+        let read = file.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    Ok(hex_digest(hasher.finalize()))
+}
+
+fn hex_digest(digest: sha1::digest::Output<Sha1>) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }

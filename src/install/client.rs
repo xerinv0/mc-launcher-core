@@ -10,7 +10,10 @@ use serde::Deserialize;
 use crate::{
     compatibility::{apply_compatibility, CompatibilityPolicy},
     core::version::VersionJson,
-    net::{download::execute_plan, http},
+    net::{
+        download::{execute_plan, execute_plan_async, DEFAULT_DOWNLOAD_WORKERS},
+        http,
+    },
     platform::Platform,
     progress::ProgressReporter,
     LauncherError, Result,
@@ -47,6 +50,26 @@ pub fn fetch_vanilla_version(version_id: &str) -> Result<VersionJson> {
         })?;
 
     http::get_json(&entry.url)
+}
+
+/// Fetches a vanilla Minecraft version JSON from Mojang's version manifest
+/// without blocking the async runtime.
+///
+/// # Errors
+///
+/// Returns [`crate::LauncherError`] if the manifest cannot be fetched, the
+/// version id is unknown, or the version JSON cannot be decoded.
+pub async fn fetch_vanilla_version_async(version_id: &str) -> Result<VersionJson> {
+    let manifest: VersionManifest = http::get_json_async(VERSION_MANIFEST_URL).await?;
+    let entry = manifest
+        .versions
+        .iter()
+        .find(|entry| entry.id == version_id)
+        .ok_or_else(|| LauncherError::InvalidVersionId {
+            id: version_id.to_string(),
+        })?;
+
+    http::get_json_async(&entry.url).await
 }
 
 /// Returns the canonical local path for a version JSON file.
@@ -166,6 +189,85 @@ pub fn install_version_files_for_platform(
         version_id,
         platform,
     )?;
+    Ok(())
+}
+
+/// Installs client jar, libraries, assets, and native libraries for a version
+/// using concurrent downloads on a tokio runtime.
+///
+/// Compatibility patches are applied automatically for the current platform.
+///
+/// # Errors
+///
+/// Returns [`crate::LauncherError`] if planning, downloads, checksums, asset
+/// decoding, or native extraction fails.
+pub async fn install_version_files_async(
+    version: &VersionJson,
+    minecraft_dir: impl AsRef<Path>,
+    reporter: &mut dyn ProgressReporter,
+) -> Result<()> {
+    install_version_files_for_platform_async(
+        version,
+        minecraft_dir,
+        Platform::current(),
+        CompatibilityPolicy::Auto,
+        reporter,
+    )
+    .await
+}
+
+/// Installs version files for an explicit platform and compatibility policy
+/// using concurrent downloads on a tokio runtime.
+///
+/// This mirrors [`install_version_files_for_platform`] for async callers.
+///
+/// # Errors
+///
+/// Returns [`crate::LauncherError`] if planning, downloads, checksums, asset
+/// decoding, or native extraction fails.
+pub async fn install_version_files_for_platform_async(
+    version: &VersionJson,
+    minecraft_dir: impl AsRef<Path>,
+    platform: Platform,
+    compatibility: CompatibilityPolicy,
+    reporter: &mut dyn ProgressReporter,
+) -> Result<()> {
+    let minecraft_dir = minecraft_dir.as_ref();
+    let compatibility = apply_compatibility(version, platform, compatibility);
+    let version = &compatibility.version;
+    let version_id = version
+        .id
+        .as_deref()
+        .ok_or_else(|| LauncherError::MissingField {
+            context: "version json".to_string(),
+            field: "id".to_string(),
+        })?;
+
+    let plan = crate::install::vanilla::plan_vanilla_downloads_for_platform(
+        version,
+        minecraft_dir,
+        platform,
+        CompatibilityPolicy::Disabled,
+    )?;
+    execute_plan_async(&plan, DEFAULT_DOWNLOAD_WORKERS, reporter).await?;
+    crate::install::assets::install_assets_async(version, minecraft_dir, reporter).await?;
+
+    let libraries = version.libraries.clone();
+    let minecraft_dir = minecraft_dir.to_path_buf();
+    let version_id = version_id.to_string();
+    let extracted = tokio::task::spawn_blocking(move || {
+        crate::install::natives::extract_natives_for_platform(
+            &libraries,
+            minecraft_dir,
+            &version_id,
+            platform,
+        )
+    })
+    .await
+    .map_err(|err| LauncherError::Other {
+        message: format!("native extraction worker failed: {err}"),
+    })?;
+    extracted?;
     Ok(())
 }
 
